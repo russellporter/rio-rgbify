@@ -22,6 +22,10 @@ from scipy.ndimage import gaussian_filter # Import gaussian filter
 import time
 import multiprocessing #Import the multiprocessing library
 
+# Default encoding constants
+DEFAULT_MAPBOX_BASE_VAL = -10000
+DEFAULT_MAPBOX_INTERVAL = 0.1
+
 def retry(attempts, base_delay=1, max_delay=10):
     def decorator(func):
         @functools.wraps(func)
@@ -53,8 +57,8 @@ class MBTilesSource:
     path: Path
     encoding: EncodingType
     height_adjustment: float = 0.0 # Added height adjustment
-    base_val: float = -10000 # Add base val, with default of -10000 for mapbox
-    interval: float = 0.1 # Add interval with default of 0.1 for mapbox
+    base_val: float = DEFAULT_MAPBOX_BASE_VAL # Add base val, with default for mapbox
+    interval: float = DEFAULT_MAPBOX_INTERVAL # Add interval with default for mapbox
     mask_values: list = field(default_factory=lambda: [0.0])
 
     def __post_init__(self):
@@ -246,6 +250,29 @@ class TerrainRGBMerger:
         
         return None
 
+    def _is_compatible_encoding(self, source: MBTilesSource) -> bool:
+        """Check if source can be used directly without re-encoding"""
+        return (
+            source.height_adjustment == 0 and
+            source.encoding == self.output_encoding and
+            source.base_val == DEFAULT_MAPBOX_BASE_VAL and
+            source.interval == DEFAULT_MAPBOX_INTERVAL
+        )
+
+    def _is_complete_tile(self, decoded_data: np.ndarray) -> bool:
+        """Check if tile has no holes (NaN values)"""
+        return not np.isnan(decoded_data).any()
+
+    def _get_raw_tile_bytes(self, conn: sqlite3.Connection, tile: mercantile.Tile) -> Optional[bytes]:
+        """Get raw tile bytes from source database"""
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?",
+            (tile.z, tile.x, tile.y)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else None
+
     def _merge_tiles(self, tile_datas: List[Optional[TileData]], target_tile: mercantile.Tile) -> Optional[np.ndarray]:
         """Merge tiles from multiple sources, handling upscaling and priorities"""
         if not any(tile_datas):
@@ -342,12 +369,39 @@ class TerrainRGBMerger:
 
     def process_tile(self, tile: mercantile.Tile, source_conns: Dict[Path, sqlite3.Connection], write_queue: Queue) -> None:
         """Process a single tile, merging data from multiple sources"""
-        #print(f"process_tile called with tile: ")
+        NOT_CHECKED = object()
+        
         try:
-            # Extract tiles from all sources
             self.logger.debug(f"Start process tile  {tile.z}/{tile.x}/{tile.y}")
-            tile_datas = [self._extract_tile(source, tile.z, tile.x, tile.y, source_conns, i) for i, source in enumerate(self.sources)]
-            self.logger.debug(f"tile datas: {len(tile_datas)}")
+            
+            tile_datas = [NOT_CHECKED] * len(self.sources)
+            
+            # Fast path: check highest priority sources for complete tiles
+            for i in reversed(range(len(self.sources))):
+                source = self.sources[i]
+                tile_data = self._extract_tile(source, tile.z, tile.x, tile.y, source_conns, i)
+                tile_datas[i] = tile_data
+                
+                if tile_data is not None:
+                    if (self._is_compatible_encoding(source) and 
+                        self._is_complete_tile(tile_data.data) and
+                        tile_data.source_zoom == tile.z):
+                        raw_bytes = self._get_raw_tile_bytes(source_conns[source.path], tile)
+                        if raw_bytes:
+                            write_queue.put((tile, raw_bytes))
+                            self.logger.info(f"Fast path: directly copied tile {tile.z}/{tile.x}/{tile.y} from source {i}")
+                            return
+                        else:
+                            self.logger.error(f"FATAL: Failed to get raw bytes for tile {tile.z}/{tile.x}/{tile.y} that should exist")
+                            raise RuntimeError(f"Raw tile bytes missing for {tile.z}/{tile.x}/{tile.y}")
+                    break
+            
+            # Extract tiles from remaining sources
+            for i in range(len(self.sources)):
+                if tile_datas[i] is NOT_CHECKED:
+                    tile_datas[i] = self._extract_tile(self.sources[i], tile.z, tile.x, tile.y, source_conns, i)
+            
+            self.logger.debug(f"tile datas: {len([td for td in tile_datas if td is not None])}")
 
             if not any(tile_datas):
                 self.logger.debug(f"No data found for tile {tile.z}/{tile.x}/{tile.y}")
@@ -364,8 +418,8 @@ class TerrainRGBMerger:
             rgb_data = ImageEncoder.data_to_rgb(
                 merged_elevation,
                 self.output_encoding,
-                0.1,
-                base_val=-10000,
+                DEFAULT_MAPBOX_INTERVAL,
+                base_val=DEFAULT_MAPBOX_BASE_VAL,
                 quantized_alpha=self.output_quantized_alpha if self.output_encoding == EncodingType.TERRARIUM else False
             )
             image_bytes = ImageEncoder.save_rgb_to_bytes(rgb_data, self.output_image_format, self.default_tile_size)
@@ -518,11 +572,34 @@ def process_tile_task(task_tuple: tuple) -> None:
 
         # Open database connection for the entire task
         with MBTilesDatabase(output_path) as db:
-            # Extract tiles from all sources
-            tile_datas = []
-            for i, source in enumerate(sources):
+            NOT_CHECKED = object()
+            tile_datas = [NOT_CHECKED] * len(sources)
+            
+            # Fast path: check highest priority sources for complete tiles
+            for i in reversed(range(len(sources))):
+                source = sources[i]
                 tile_data = merger_instance._extract_tile(source, tile.z, tile.x, tile.y, source_conns, i)
-                tile_datas.append(tile_data)
+                tile_datas[i] = tile_data
+                
+                if tile_data is not None:
+                    if (merger_instance._is_compatible_encoding(source) and 
+                        merger_instance._is_complete_tile(tile_data.data) and
+                        tile_data.source_zoom == tile.z):
+                        raw_bytes = merger_instance._get_raw_tile_bytes(source_conns[source.path], tile)
+                        if raw_bytes:
+                            db.insert_tile_with_retry([tile.x, tile.y, tile.z], raw_bytes)
+                            if verbose:
+                                print(f"Fast path: directly copied tile {tile.z}/{tile.x}/{tile.y} from source {i}")
+                            return
+                        else:
+                            print(f"FATAL: Failed to get raw bytes for tile {tile.z}/{tile.x}/{tile.y} that should exist")
+                            raise RuntimeError(f"Raw tile bytes missing for {tile.z}/{tile.x}/{tile.y}")
+                    break
+            
+            # Extract tiles from remaining sources
+            for i in range(len(sources)):
+                if tile_datas[i] is NOT_CHECKED:
+                    tile_datas[i] = merger_instance._extract_tile(sources[i], tile.z, tile.x, tile.y, source_conns, i)
 
             if not any(tile_datas):
                 if verbose:
@@ -541,8 +618,8 @@ def process_tile_task(task_tuple: tuple) -> None:
             rgb_data = ImageEncoder.data_to_rgb(
                 merged_elevation,
                 output_encoding,
-                0.1,
-                base_val=-10000,
+                DEFAULT_MAPBOX_INTERVAL,
+                base_val=DEFAULT_MAPBOX_BASE_VAL,
                 quantized_alpha=output_alpha
             )
             image_bytes = ImageEncoder.save_rgb_to_bytes(rgb_data, output_format)
