@@ -244,7 +244,9 @@ class RasterRGBMerger:
                         src_crs=tile_data.meta['crs'],
                         dst_transform=sub_region_transform,
                         dst_crs=tile_data.meta['crs'],
-                        resampling=self.resampling
+                        resampling=self.resampling,
+                        src_nodata=np.nan,
+                        dst_nodata=np.nan
                     )
                     # Apply Gaussian blur to destination data after reprojection
                     blurred_data = gaussian_filter(dst_data, sigma=dynamic_sigma)
