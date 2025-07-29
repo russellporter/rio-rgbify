@@ -181,6 +181,10 @@ def merge(config, workers, verbose):
                 raise Exception(f"Invalid source_type: ")
 
             if source_type.lower() == 'mbtiles':
+                cutline_path = None
+                if "cutline" in source and source["cutline"]:
+                    cutline_path = Path(source["cutline"])
+                
                 sources.append(
                     MBTilesSource(
                         path=Path(source["path"]),
@@ -188,7 +192,8 @@ def merge(config, workers, verbose):
                         height_adjustment=source.get("height_adjustment", 0.0),
                         base_val=source.get("base_val", -10000),
                         interval=source.get("interval", 0.1),
-                        mask_values=source.get("mask_values", [0.0])
+                        mask_values=source.get("mask_values", [0.0]),
+                        cutline=cutline_path
                     )
                 )
             elif source_type.lower() == 'raster':
