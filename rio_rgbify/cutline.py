@@ -288,8 +288,8 @@ def clip_array_with_cutline(data: np.ndarray,
     """
     Clip a numpy array using cutline polygon geometries.
     
-    For large/complex geometries, this uses geometry_mask which is more efficient
-    than rasterio.mask.mask for tile-based processing.
+    If no geometries are provided (empty list), the entire array is masked as nodata.
+    This handles the case where tiles are completely outside the cutline polygon.
     
     Parameters
     ----------
@@ -298,7 +298,7 @@ def clip_array_with_cutline(data: np.ndarray,
     transform : rasterio.Affine
         Affine transform of the data
     geometries : List[Dict[str, Any]]
-        List of polygon geometries to use for clipping
+        List of polygon geometries to use for clipping. Empty list = mask all as nodata.
     crs : str, optional
         Coordinate reference system of the data, defaults to 'EPSG:3857'
     nodata : float, optional
@@ -309,8 +309,9 @@ def clip_array_with_cutline(data: np.ndarray,
     np.ndarray
         Clipped data array with areas outside polygons set to nodata
     """
+    # If no geometries provided, mask everything as nodata (tile outside cutline)
     if not geometries:
-        return data
+        return np.full_like(data, nodata)
         
     try:
         # Use geometry_mask for better performance with large geometries
@@ -405,19 +406,41 @@ def clip_ogr_geometries_to_bounds(ogr_geometries: List['ogr.Geometry'],
     List[Dict[str, Any]]
         List of clipped geometries as GeoJSON dicts for rasterio.mask
     """
-    if not ogr_geometries or not HAS_OGR:
+    if not ogr_geometries:
+        logger.debug("No OGR geometries provided to clip_ogr_geometries_to_bounds")
+        return []
+        
+    if not HAS_OGR:
+        logger.warning("OGR not available for geometry clipping")
         return []
         
     west, south, east, north = bounds
     clipped = []
+    
+    logger.debug(f"Clipping {len(ogr_geometries)} geometries to bounds: {bounds}")
     
     try:
         # Create bounding box geometry for clipping
         bbox_wkt = f"POLYGON(({west} {south}, {east} {south}, {east} {north}, {west} {north}, {west} {south}))"
         bbox_geom = ogr.CreateGeometryFromWkt(bbox_wkt)
         
-        for geom in ogr_geometries:
-            if geom and bbox_geom.Intersects(geom):
+        if not bbox_geom:
+            logger.error(f"Failed to create bbox geometry from WKT: {bbox_wkt}")
+            return []
+        
+        for i, geom in enumerate(ogr_geometries):
+            if not geom:
+                logger.debug(f"Geometry {i} is None, skipping")
+                continue
+                
+            if not geom.IsValid():
+                logger.debug(f"Geometry {i} is invalid, skipping")
+                continue
+                
+            intersects = bbox_geom.Intersects(geom)
+            logger.debug(f"Geometry {i} intersects with tile bounds: {intersects}")
+            
+            if intersects:
                 # Clip geometry to bounding box - this is the key optimization
                 clipped_geom = geom.Intersection(bbox_geom)
                 
@@ -427,20 +450,28 @@ def clip_ogr_geometries_to_bounds(ogr_geometries: List['ogr.Geometry'],
                     if clipped_json_str:
                         clipped_dict = json.loads(clipped_json_str)
                         clipped.append(clipped_dict)
+                        logger.debug(f"Successfully clipped geometry {i}")
+                    else:
+                        logger.debug(f"Failed to export clipped geometry {i} to JSON")
+                else:
+                    logger.debug(f"Clipped geometry {i} is empty or None")
                 
     except Exception as e:
-        logger.warning(f"Failed to clip geometries to bounds: {e}. Using original geometries.")
+        logger.error(f"Failed to clip geometries to bounds: {e}. Using original geometries.")
         # Fallback: convert original geometries to dicts
-        for geom in ogr_geometries:
+        for i, geom in enumerate(ogr_geometries):
             try:
-                geom_json_str = geom.ExportToJson()
-                if geom_json_str:
-                    geom_dict = json.loads(geom_json_str)
-                    clipped.append(geom_dict)
-            except:
+                if geom and geom.IsValid():
+                    geom_json_str = geom.ExportToJson()
+                    if geom_json_str:
+                        geom_dict = json.loads(geom_json_str)
+                        clipped.append(geom_dict)
+                        logger.debug(f"Fallback: converted geometry {i} to dict")
+            except Exception as fallback_e:
+                logger.warning(f"Fallback failed for geometry {i}: {fallback_e}")
                 continue
     
-    logger.debug(f"Clipped {len(ogr_geometries)} OGR geometries to {len(clipped)} parts within tile bounds")
+    logger.info(f"Clipped {len(ogr_geometries)} OGR geometries to {len(clipped)} parts within tile bounds")
     return clipped
 
 

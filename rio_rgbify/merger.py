@@ -208,23 +208,26 @@ class TerrainRGBMerger:
                 
                 # Apply cutline clipping if specified
                 cutline_ogr_geometries = source.get_cutline_ogr_geometries('EPSG:3857')
+                self.logger.debug(f"Retrieved cutline geometries: {len(cutline_ogr_geometries) if cutline_ogr_geometries else 0}")
+                
                 if cutline_ogr_geometries is not None:
                     try:
                         # Get tile bounds for spatial filtering
                         bounds = mercantile.bounds(tile)
                         tile_bounds = (bounds.west, bounds.south, bounds.east, bounds.north)
+                        self.logger.debug(f"Tile bounds for {tile.z}/{tile.x}/{tile.y}: {tile_bounds}")
                         
                         # Clip OGR geometries to tile bounds (avoids JSON round-trips)
                         clipped_geometries = clip_ogr_geometries_to_bounds(cutline_ogr_geometries, tile_bounds)
                         
-                        if clipped_geometries:
-                            elevation = clip_array_with_cutline(
-                                elevation, 
-                                meta['transform'],
-                                clipped_geometries, 
-                                crs='EPSG:3857',
-                                nodata=np.nan
-                            )
+                        # Apply cutline clipping (handles both intersecting and non-intersecting tiles)
+                        elevation = clip_array_with_cutline(
+                            elevation, 
+                            meta['transform'],
+                            clipped_geometries,  # Empty list = mask all as nodata
+                            crs='EPSG:3857',
+                            nodata=np.nan
+                        )
                     except Exception as e:
                         self.logger.warning(f"Failed to apply cutline from {source.cutline}: {e}. Proceeding without cutline.")
                 
