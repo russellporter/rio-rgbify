@@ -477,7 +477,7 @@ class TerrainRGBMerger:
         tasks = [
             (
                 tile,
-                [(s.path, s.encoding.value, s.height_adjustment, s.base_val, s.interval, s.mask_values)
+                [(s.path, s.encoding.value, s.height_adjustment, s.base_val, s.interval, s.mask_values, s.cutline)
                  for s in self.sources],
                 self.output_path,
                 self.output_encoding.value,
@@ -585,14 +585,15 @@ def process_tile_task(task_tuple: tuple) -> None:
     db = None
     try:
         # Reconstruct MBTilesSource objects and create connections
-        for path, encoding, height_adj, base_val, interval, mask_vals in source_configs:
+        for path, encoding, height_adj, base_val, interval, mask_vals, cutline in source_configs:
             source = MBTilesSource(
                 path=Path(path),
                 encoding=EncodingType(encoding),
                 height_adjustment=height_adj,
                 base_val=base_val,
                 interval=interval,
-                mask_values=mask_vals
+                mask_values=mask_vals,
+                cutline=Path(cutline) if cutline else None
             )
             sources.append(source)
             source_conns[source.path] = sqlite3.connect(source.path)
