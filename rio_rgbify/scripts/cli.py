@@ -163,6 +163,12 @@ def rgbify(
 @click.option("--verbose", "-v", is_flag=True, default=False)
 def merge(config, workers, verbose):
     """Merge multiple MBTiles files."""
+    # Set logging level based on verbose flag
+    if verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    else:
+        logging.getLogger().setLevel(logging.INFO)
+    
     try:
         with open(config) as f:
             config = json.load(f)
@@ -250,7 +256,7 @@ def merge(config, workers, verbose):
                 bounds_source = config.get("bounds_source", None)
             )
 
-        merger.process_all(min_zoom=config.get("min_zoom", 0), verbose = verbose)
+        merger.process_all(min_zoom=config.get("min_zoom", 0))
     except Exception as e:
         logging.error(f"An error occured: {e}")
 

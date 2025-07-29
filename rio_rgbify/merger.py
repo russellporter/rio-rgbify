@@ -420,7 +420,7 @@ class TerrainRGBMerger:
                         raw_bytes = self._get_raw_tile_bytes(source_conns[source.path], tile)
                         if raw_bytes:
                             write_queue.put((tile, raw_bytes))
-                            self.logger.info(f"Fast path: directly copied tile {tile.z}/{tile.x}/{tile.y} from source {i}")
+                            self.logger.debug(f"Fast path: directly copied tile {tile.z}/{tile.x}/{tile.y} from source {i}")
                             return
                         else:
                             self.logger.error(f"FATAL: Failed to get raw bytes for tile {tile.z}/{tile.x}/{tile.y} that should exist")
@@ -455,14 +455,14 @@ class TerrainRGBMerger:
             )
             image_bytes = ImageEncoder.save_rgb_to_bytes(rgb_data, self.output_image_format, self.default_tile_size)
             
-            logging.debug(f"image_bytes {len(image_bytes)}")
+            self.logger.debug(f"image_bytes {len(image_bytes)}")
             write_queue.put((tile, image_bytes))
             self.logger.info(f"Successfully processed tile {tile.z}/{tile.x}/{tile.y}")
         except Exception as e:
             self.logger.error(f"Error processing tile {tile.z}/{tile.x}/{tile.y}: {e}")
             raise
 
-    def process_zoom_level(self, zoom: int, verbose):
+    def process_zoom_level(self, zoom: int):
         """Process all tiles for a given zoom level in parallel"""
         self.logger.info(f"Processing zoom level ")
         source_conns = {}
@@ -484,8 +484,7 @@ class TerrainRGBMerger:
                 self.output_nodata,
                 self.resampling,
                 self.output_image_format.value,
-                self.output_quantized_alpha,
-                verbose
+                self.output_quantized_alpha
             )
             for tile in tiles
         ]
@@ -507,7 +506,7 @@ class TerrainRGBMerger:
         
         if self.bounds is not None:
             w,s,e,n = self.bounds
-            print(f" West:{w} North: {n} East: {e} South: {s}")
+            self.logger.debug(f" West:{w} North: {n} East: {e} South: {s}")
             for x, y in _tile_range(mercantile.tile(w, n, zoom), mercantile.tile(e, s, zoom)):
                 y = int(math.pow(2, zoom)) - y - 1
                 tiles.add(mercantile.Tile(x=x, y=y, z=zoom))
@@ -554,7 +553,7 @@ class TerrainRGBMerger:
              max_zoom = result[0] if result and result[0] is not None else 0
              return max_zoom
 
-    def process_all(self, min_zoom: int = 0, verbose = False):
+    def process_all(self, min_zoom: int = 0):
         """Process all zoom levels"""
         max_zoom = self.max_zoom if self.max_zoom is not None else self.get_max_zoom_level()
         self.logger.info(f"Processing zoom levels {min_zoom} to {max_zoom}")
@@ -564,22 +563,22 @@ class TerrainRGBMerger:
 
 
         for zoom in range(min_zoom, max_zoom + 1):
-             self.process_zoom_level(zoom, verbose)
+             self.process_zoom_level(zoom)
 
         self.logger.info("Completed processing all zoom levels")
 
 @retry(attempts=5, base_delay=0.5, max_delay=5)
 def process_tile_task(task_tuple: tuple) -> None:
     """Standalone function for processing tiles that can be pickled"""
-    tile, source_configs, output_path, output_encoding, output_nodata, resampling, output_format, output_alpha, verbose = task_tuple
+    tile, source_configs, output_path, output_encoding, output_nodata, resampling, output_format, output_alpha = task_tuple
     
     # Configure logging for each process
+    # Note: The logging level will be inherited from the parent process
     logging.basicConfig(
-        level=logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
-    print(f"process_tile_task started for tile {tile.z}/{tile.x}/{tile.y}")
+    logging.debug(f"process_tile_task started for tile {tile.z}/{tile.x}/{tile.y}")
     
     source_conns = {}
     sources = []
@@ -619,8 +618,7 @@ def process_tile_task(task_tuple: tuple) -> None:
                         raw_bytes = merger_instance._get_raw_tile_bytes(source_conns[source.path], tile)
                         if raw_bytes:
                             db.insert_tile_with_retry([tile.x, tile.y, tile.z], raw_bytes)
-                            if verbose:
-                                print(f"Fast path: directly copied tile {tile.z}/{tile.x}/{tile.y} from source {i}")
+                            logging.info(f"Fast path: directly copied tile {tile.z}/{tile.x}/{tile.y} from source {i}")
                             return
                         else:
                             print(f"FATAL: Failed to get raw bytes for tile {tile.z}/{tile.x}/{tile.y} that should exist")
@@ -633,16 +631,14 @@ def process_tile_task(task_tuple: tuple) -> None:
                     tile_datas[i] = merger_instance._extract_tile(sources[i], tile.z, tile.x, tile.y, source_conns, i)
 
             if not any(tile_datas):
-                if verbose:
-                    print(f"No tile data for {tile.z}/{tile.x}/{tile.y}")
+                logging.debug(f"No tile data for {tile.z}/{tile.x}/{tile.y}")
                 return
 
             # Merge the elevation data
             merged_elevation = merger_instance._merge_tiles(tile_datas, tile)
             
             if merged_elevation is None:
-                if verbose:
-                    print(f"No merged elevation {tile.z}/{tile.x}/{tile.y}")
+                logging.debug(f"No merged elevation {tile.z}/{tile.x}/{tile.y}")
                 return
             
             # Encode using output format
@@ -654,8 +650,7 @@ def process_tile_task(task_tuple: tuple) -> None:
                 quantized_alpha=output_alpha
             )
             image_bytes = ImageEncoder.save_rgb_to_bytes(rgb_data, output_format)
-            if verbose:
-                print(f"image_bytes {len(image_bytes)}")
+            logging.debug(f"image_bytes {len(image_bytes)}")
             # Write to output database
             db.insert_tile_with_retry([tile.x, tile.y, tile.z], image_bytes)
 
