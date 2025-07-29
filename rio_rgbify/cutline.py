@@ -125,8 +125,9 @@ def load_cutline_ogr_geometries(cutline_path: Path, target_crs: str = 'EPSG:3857
                 cloned_geom.Transform(transform)
             
             # Simplify complex geometries for better performance
-            simplified_geom = cloned_geom.Simplify(tolerance=10.0)
-            if simplified_geom and simplified_geom.GetGeometryCount() > 0:
+            # OGR Simplify takes tolerance as positional argument, not keyword
+            simplified_geom = cloned_geom.Simplify(10.0)  # 10 meter tolerance in Web Mercator
+            if simplified_geom and not simplified_geom.IsEmpty():
                 geometries.append(simplified_geom)
             else:
                 geometries.append(cloned_geom)
@@ -192,9 +193,9 @@ def _load_ogr_geometries(cutline_path: Path, target_crs: str = 'EPSG:3857') -> L
                 geom.Transform(transform)
             
             # Simplify complex geometries for better performance
-            # Use a small tolerance to reduce vertex count while preserving shape
-            simplified_geom = geom.Simplify(tolerance=10.0)  # 10 meter tolerance in Web Mercator
-            if simplified_geom and simplified_geom.GetGeometryCount() > 0:
+            # OGR Simplify takes tolerance as positional argument, not keyword
+            simplified_geom = geom.Simplify(10.0)  # 10 meter tolerance in Web Mercator
+            if simplified_geom and not simplified_geom.IsEmpty():
                 geom = simplified_geom
             
             # Convert to GeoJSON-like dictionary
