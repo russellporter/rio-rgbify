@@ -206,6 +206,20 @@ class TerrainRGBMerger:
                 #Apply height adjustment
                 elevation += source.height_adjustment
                 
+                # Create metadata early since cutline clipping needs the transform
+                bounds = mercantile.bounds(tile)
+                meta = dataset.meta.copy()
+                meta.update({
+                    'count': 1,
+                    'dtype': rasterio.float32,
+                    'driver': 'GTiff',
+                    'crs': 'EPSG:3857',
+                    'transform': rasterio.transform.from_bounds(
+                        bounds.west, bounds.south, bounds.east, bounds.north,
+                        meta['width'], meta['height']
+                    )
+                })
+                
                 # Apply cutline clipping if specified
                 cutline_ogr_geometries = source.get_cutline_ogr_geometries('EPSG:3857')
                 self.logger.debug(f"Retrieved cutline geometries: {len(cutline_ogr_geometries) if cutline_ogr_geometries else 0}")
@@ -213,7 +227,6 @@ class TerrainRGBMerger:
                 if cutline_ogr_geometries is not None:
                     try:
                         # Get tile bounds for spatial filtering
-                        bounds = mercantile.bounds(tile)
                         tile_bounds = (bounds.west, bounds.south, bounds.east, bounds.north)
                         self.logger.debug(f"Tile bounds for {tile.z}/{tile.x}/{tile.y}: {tile_bounds}")
                         
@@ -230,19 +243,6 @@ class TerrainRGBMerger:
                         )
                     except Exception as e:
                         self.logger.warning(f"Failed to apply cutline from {source.cutline}: {e}. Proceeding without cutline.")
-                
-                bounds = mercantile.bounds(tile)
-                meta = dataset.meta.copy()
-                meta.update({
-                    'count': 1,
-                    'dtype': rasterio.float32,
-                    'driver': 'GTiff',
-                    'crs': 'EPSG:3857',
-                    'transform': rasterio.transform.from_bounds(
-                        bounds.west, bounds.south, bounds.east, bounds.north,
-                        meta['width'], meta['height']
-                    )
-                })
                 
                 return elevation, meta
         except Exception as e:
