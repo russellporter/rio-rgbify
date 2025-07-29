@@ -27,6 +27,9 @@ import multiprocessing #Import the multiprocessing library
 DEFAULT_MAPBOX_BASE_VAL = -10000
 DEFAULT_MAPBOX_INTERVAL = 0.1
 
+# Module-level cache for OGR geometries to avoid recreating them per tile
+_PROCESS_GEOMETRY_CACHE = {}
+
 def retry(attempts, base_delay=1, max_delay=10):
     def decorator(func):
         @functools.wraps(func)
@@ -482,7 +485,7 @@ class TerrainRGBMerger:
 
     def process_zoom_level(self, zoom: int):
         """Process all tiles for a given zoom level in parallel"""
-        self.logger.info(f"Processing zoom level ")
+        self.logger.info(f"Processing zoom level {zoom}")
         source_conns = {}
         for s in self.sources:
             source_conns[s.path] = sqlite3.connect(s.path)
@@ -491,12 +494,33 @@ class TerrainRGBMerger:
         tiles = self._get_tiles_for_zoom(zoom, source_conns)
         self.logger.info(f"Found {len(tiles)} tiles to process")
 
-        # Create task tuples with all necessary data
+        # Pre-load cutline geometries to avoid loading them in each worker process
+        # Convert OGR geometries to WKT strings for pickling across processes
+        source_configs_with_geometries = []
+        for s in self.sources:
+            # Load geometries once here in the main process
+            cutline_geometries_wkt = None
+            if s.cutline is not None:
+                try:
+                    ogr_geometries = s.get_cutline_ogr_geometries('EPSG:3857')
+                    if ogr_geometries:
+                        # Convert to WKT strings for serialization
+                        cutline_geometries_wkt = [geom.ExportToWkt() for geom in ogr_geometries]
+                        self.logger.info(f"Pre-loaded {len(cutline_geometries_wkt)} geometries for {s.cutline}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to pre-load cutline geometries from {s.cutline}: {e}")
+                    cutline_geometries_wkt = None
+            
+            source_configs_with_geometries.append((
+                s.path, s.encoding.value, s.height_adjustment, s.base_val, s.interval, s.mask_values, 
+                s.cutline, cutline_geometries_wkt
+            ))
+
+        # Create task tuples with all necessary data including pre-loaded geometries
         tasks = [
             (
                 tile,
-                [(s.path, s.encoding.value, s.height_adjustment, s.base_val, s.interval, s.mask_values, s.cutline)
-                 for s in self.sources],
+                source_configs_with_geometries,
                 self.output_path,
                 self.output_encoding.value,
                 self.output_nodata,
@@ -601,9 +625,10 @@ def process_tile_task(task_tuple: tuple) -> None:
     source_conns = {}
     sources = []
     db = None
+    
     try:
         # Reconstruct MBTilesSource objects and create connections
-        for path, encoding, height_adj, base_val, interval, mask_vals, cutline in source_configs:
+        for i, (path, encoding, height_adj, base_val, interval, mask_vals, cutline, cutline_geometries_wkt) in enumerate(source_configs):
             source = MBTilesSource(
                 path=Path(path),
                 encoding=EncodingType(encoding),
@@ -613,6 +638,21 @@ def process_tile_task(task_tuple: tuple) -> None:
                 mask_values=mask_vals,
                 cutline=Path(cutline) if cutline else None
             )
+            
+            # Convert WKT strings back to OGR geometries ONCE per process, not per tile
+            cache_key = f"{path}_{cutline}"  # Use path+cutline as unique key
+            if cutline_geometries_wkt and cache_key not in _PROCESS_GEOMETRY_CACHE:
+                try:
+                    from osgeo import ogr
+                    ogr_geometries = [ogr.CreateGeometryFromWkt(wkt) for wkt in cutline_geometries_wkt]
+                    _PROCESS_GEOMETRY_CACHE[cache_key] = ogr_geometries
+                    logging.debug(f"Cached {len(ogr_geometries)} OGR geometries for {cutline}")
+                except Exception as e:
+                    logging.warning(f"Failed to recreate OGR geometries from WKT: {e}")
+                    _PROCESS_GEOMETRY_CACHE[cache_key] = None
+            
+            # Use cached geometries
+            source._cutline_ogr_geometries = _PROCESS_GEOMETRY_CACHE.get(cache_key, None)
             sources.append(source)
             source_conns[source.path] = sqlite3.connect(source.path)
 
