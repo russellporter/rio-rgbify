@@ -11,6 +11,12 @@ import rasterio.windows
 from rasterio.features import geometry_mask
 import json
 
+try:
+    from osgeo import ogr, osr
+    HAS_OGR = True
+except ImportError:
+    HAS_OGR = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,10 +24,17 @@ def load_cutline_geometries(cutline_path: Path, target_crs: str = 'EPSG:3857') -
     """
     Load polygon geometries from a cutline file and transform to target CRS.
     
+    Supports any vector format readable by GDAL/OGR including:
+    - GeoJSON (.geojson, .json)
+    - Shapefile (.shp)
+    - KML (.kml)
+    - GPX (.gpx)
+    - And many other GDAL-supported formats
+    
     Parameters
     ----------
     cutline_path : Path
-        Path to the cutline file (GeoJSON supported, shapefile via GDAL)
+        Path to the cutline file
     target_crs : str, optional
         Target coordinate reference system, defaults to 'EPSG:3857'
         
@@ -38,58 +51,167 @@ def load_cutline_geometries(cutline_path: Path, target_crs: str = 'EPSG:3857') -
     if not cutline_path.exists():
         raise ValueError(f"Cutline file does not exist: {cutline_path}")
     
-    geometries = []
-    
-    # Handle GeoJSON files directly
-    if cutline_path.suffix.lower() == '.geojson' or cutline_path.suffix.lower() == '.json':
-        try:
-            with open(cutline_path, 'r') as f:
-                geojson_data = json.load(f)
-            
-            if geojson_data.get('type') == 'FeatureCollection':
-                for feature in geojson_data.get('features', []):
-                    geom = feature.get('geometry')
-                    if geom:
-                        geometries.append(geom)
-            elif geojson_data.get('type') in ['Polygon', 'MultiPolygon']:
-                geometries.append(geojson_data)
-                
-        except Exception as e:
-            raise ValueError(f"Failed to load GeoJSON file {cutline_path}: {str(e)}")
-    
-    # For other formats, try using rasterio's vector capabilities
+    # Use OGR if available for all formats
+    if HAS_OGR:
+        geometries = _load_ogr_geometries(cutline_path, target_crs)
     else:
-        try:
-            # Use rasterio to open vector files through GDAL
-            import rasterio.features
-            from rasterio.crs import CRS
-            
-            # Try to read as vector using rasterio's GDAL interface
-            with rasterio.Env():
-                # This is a simplified approach - in practice you might want to use
-                # geopandas or similar for more robust vector file reading
-                # For now, recommend using GeoJSON format for cutlines
-                raise ValueError(f"Non-GeoJSON vector formats not yet supported. Please convert {cutline_path} to GeoJSON format.")
-                
-        except Exception as e:
-            raise ValueError(f"Failed to load cutline file {cutline_path}: {str(e)}")
+        raise ValueError(
+            f"Cannot read vector files without GDAL/OGR. "
+            f"Please install GDAL to use cutline functionality."
+        )
     
     if not geometries:
         raise ValueError(f"No valid geometries found in cutline file: {cutline_path}")
-        
-    # Transform geometries to target CRS if needed
-    transformed_geometries = []
-    for geom in geometries:
-        try:
-            # For now, assume input is already in correct CRS
-            # In practice, you'd want to handle CRS transformation here
-            transformed_geometries.append(geom)
-        except Exception as e:
-            logger.warning(f"Failed to transform geometry: {e}")
-            continue
     
-    logger.info(f"Loaded {len(transformed_geometries)} geometries from {cutline_path}")
-    return transformed_geometries
+    logger.info(f"Loaded {len(geometries)} geometries from {cutline_path}")
+    return geometries
+
+
+
+def load_cutline_ogr_geometries(cutline_path: Path, target_crs: str = 'EPSG:3857') -> List['ogr.Geometry']:
+    """
+    Load cutline geometries as OGR geometry objects (no JSON conversion).
+    
+    This is more efficient for repeated spatial operations like clipping.
+    """
+    if not HAS_OGR:
+        raise ValueError("Cannot load OGR geometries without GDAL/OGR installed")
+        
+    geometries = []
+    
+    try:
+        # Open the vector file with OGR (let OGR auto-detect the driver)
+        datasource = ogr.Open(str(cutline_path))
+        
+        if datasource is None:
+            raise ValueError(f"Could not open vector file: {cutline_path}")
+        
+        # Get the layer (use first layer)
+        layer = datasource.GetLayer(0)
+        if layer is None:
+            raise ValueError(f"No layers found in vector file: {cutline_path}")
+        
+        # Get source CRS
+        source_srs = layer.GetSpatialRef()
+        
+        # Set up coordinate transformation if needed
+        transform = None
+        if source_srs:
+            target_srs = osr.SpatialReference()
+            if target_crs.startswith('EPSG:'):
+                target_srs.ImportFromEPSG(int(target_crs.split(':')[1]))
+            else:
+                target_srs.ImportFromWkt(target_crs)
+            
+            if not source_srs.IsSame(target_srs):
+                transform = osr.CoordinateTransformation(source_srs, target_srs)
+        
+        # Read each feature and extract geometry
+        for feature in layer:
+            geom = feature.GetGeometryRef()
+            if geom is None:
+                continue
+            
+            # Only process polygon geometries
+            geom_type = geom.GetGeometryType()
+            if geom_type not in [ogr.wkbPolygon, ogr.wkbMultiPolygon]:
+                continue
+            
+            # Clone geometry to avoid issues with datasource cleanup
+            cloned_geom = geom.Clone()
+            
+            # Transform geometry if needed
+            if transform:
+                cloned_geom.Transform(transform)
+            
+            # Simplify complex geometries for better performance
+            simplified_geom = cloned_geom.Simplify(tolerance=10.0)
+            if simplified_geom and simplified_geom.GetGeometryCount() > 0:
+                geometries.append(simplified_geom)
+            else:
+                geometries.append(cloned_geom)
+        
+        # Clean up
+        datasource = None
+        
+        logger.info(f"Loaded {len(geometries)} OGR geometries from {cutline_path}")
+        
+    except Exception as e:
+        raise ValueError(f"Failed to load vector file {cutline_path}: {str(e)}")
+    
+    return geometries
+
+
+def _load_ogr_geometries(cutline_path: Path, target_crs: str = 'EPSG:3857') -> List[Dict[str, Any]]:
+    """Load geometries from any OGR-supported vector format with optimization for large geometries."""
+    geometries = []
+    
+    try:
+        # Open the vector file with OGR (let OGR auto-detect the driver)
+        datasource = ogr.Open(str(cutline_path))
+        
+        if datasource is None:
+            raise ValueError(f"Could not open vector file: {cutline_path}")
+        
+        # Get the layer (use first layer)
+        layer = datasource.GetLayer(0)
+        if layer is None:
+            raise ValueError(f"No layers found in vector file: {cutline_path}")
+        
+        # Get source CRS
+        source_srs = layer.GetSpatialRef()
+        source_crs = None
+        if source_srs:
+            source_crs = source_srs.ExportToWkt()
+        
+        # Set up coordinate transformation if needed
+        transform = None
+        if source_srs:
+            target_srs = osr.SpatialReference()
+            if target_crs.startswith('EPSG:'):
+                target_srs.ImportFromEPSG(int(target_crs.split(':')[1]))
+            else:
+                target_srs.ImportFromWkt(target_crs)
+            
+            if not source_srs.IsSame(target_srs):
+                transform = osr.CoordinateTransformation(source_srs, target_srs)
+        
+        # Read each feature and extract geometry
+        for feature in layer:
+            geom = feature.GetGeometryRef()
+            if geom is None:
+                continue
+            
+            # Only process polygon geometries
+            geom_type = geom.GetGeometryType()
+            if geom_type not in [ogr.wkbPolygon, ogr.wkbMultiPolygon]:
+                continue
+            
+            # Transform geometry if needed
+            if transform:
+                geom.Transform(transform)
+            
+            # Simplify complex geometries for better performance
+            # Use a small tolerance to reduce vertex count while preserving shape
+            simplified_geom = geom.Simplify(tolerance=10.0)  # 10 meter tolerance in Web Mercator
+            if simplified_geom and simplified_geom.GetGeometryCount() > 0:
+                geom = simplified_geom
+            
+            # Convert to GeoJSON-like dictionary
+            geom_json_str = geom.ExportToJson()
+            if geom_json_str:
+                geometry_dict = json.loads(geom_json_str)
+                geometries.append(geometry_dict)
+        
+        # Clean up
+        datasource = None
+        
+        logger.info(f"Loaded and simplified {len(geometries)} geometries from {cutline_path}")
+        
+    except Exception as e:
+        raise ValueError(f"Failed to load vector file {cutline_path}: {str(e)}")
+    
+    return geometries
 
 
 def transform_geometry(geometry: Dict[str, Any], source_crs: str, target_crs: str) -> Dict[str, Any]:
@@ -101,9 +223,9 @@ def transform_geometry(geometry: Dict[str, Any], source_crs: str, target_crs: st
     geometry : Dict[str, Any]
         GeoJSON-like geometry dictionary
     source_crs : str
-        Source coordinate reference system
+        Source coordinate reference system (EPSG code or WKT)
     target_crs : str
-        Target coordinate reference system
+        Target coordinate reference system (EPSG code or WKT)
         
     Returns
     -------
@@ -114,11 +236,47 @@ def transform_geometry(geometry: Dict[str, Any], source_crs: str, target_crs: st
         return geometry
     
     try:
-        # Use rasterio's transform_geom for CRS transformation
+        # First try using rasterio's transform_geom (fastest)
         return rasterio.warp.transform_geom(source_crs, target_crs, geometry)
     except Exception as e:
+        logger.debug(f"Rasterio transform failed, trying OGR: {e}")
+        
+        # Fallback to OGR transformation if available
+        if HAS_OGR:
+            try:
+                return _transform_geometry_ogr(geometry, source_crs, target_crs)
+            except Exception as ogr_e:
+                logger.warning(f"OGR transform also failed: {ogr_e}")
+        
         logger.warning(f"Failed to transform geometry from {source_crs} to {target_crs}: {e}")
         return geometry
+
+
+def _transform_geometry_ogr(geometry: Dict[str, Any], source_crs: str, target_crs: str) -> Dict[str, Any]:
+    """Transform geometry using OGR."""
+    # Create OGR geometry from GeoJSON
+    geom = ogr.CreateGeometryFromJson(json.dumps(geometry))
+    
+    # Set up coordinate systems
+    source_srs = osr.SpatialReference()
+    target_srs = osr.SpatialReference()
+    
+    if source_crs.startswith('EPSG:'):
+        source_srs.ImportFromEPSG(int(source_crs.split(':')[1]))
+    else:
+        source_srs.ImportFromWkt(source_crs)
+        
+    if target_crs.startswith('EPSG:'):
+        target_srs.ImportFromEPSG(int(target_crs.split(':')[1]))
+    else:
+        target_srs.ImportFromWkt(target_crs)
+    
+    # Transform
+    transform = osr.CoordinateTransformation(source_srs, target_srs)
+    geom.Transform(transform)
+    
+    # Convert back to GeoJSON
+    return json.loads(geom.ExportToJson())
 
 
 def clip_array_with_cutline(data: np.ndarray, 
@@ -128,6 +286,9 @@ def clip_array_with_cutline(data: np.ndarray,
                            nodata: float = np.nan) -> np.ndarray:
     """
     Clip a numpy array using cutline polygon geometries.
+    
+    For large/complex geometries, this uses geometry_mask which is more efficient
+    than rasterio.mask.mask for tile-based processing.
     
     Parameters
     ----------
@@ -151,40 +312,25 @@ def clip_array_with_cutline(data: np.ndarray,
         return data
         
     try:
-        # Create a memory dataset for the clipping operation
+        # Use geometry_mask for better performance with large geometries
         height, width = data.shape[-2:]
         
-        with rasterio.io.MemoryFile() as memfile:
-            with memfile.open(
-                driver='GTiff',
-                height=height,
-                width=width,
-                count=1,
-                dtype=data.dtype,
-                crs=crs,
-                transform=transform,
-                nodata=nodata
-            ) as dataset:
-                # Write the data to the dataset
-                if data.ndim == 2:
-                    dataset.write(data, 1)
-                else:
-                    dataset.write(data[0], 1)
-                
-                # Perform the clipping operation
-                clipped_data, clipped_transform = rasterio.mask.mask(
-                    dataset, 
-                    geometries, 
-                    crop=False,  # Don't crop to polygon bounds, keep original extent
-                    nodata=nodata,
-                    filled=True
-                )
-                
-                # Return the clipped data in original shape
-                if data.ndim == 2:
-                    return clipped_data[0]
-                else:
-                    return clipped_data
+        # Create mask where True = inside polygons, False = outside
+        mask = geometry_mask(
+            geometries,
+            out_shape=(height, width),
+            transform=transform,
+            invert=True  # Invert so True = inside polygons
+        )
+        
+        # Apply mask to data
+        result = data.copy()
+        if result.ndim == 2:
+            result[~mask] = nodata
+        else:
+            result[0][~mask] = nodata
+            
+        return result
                     
     except Exception as e:
         logger.warning(f"Failed to clip array with cutline: {e}. Returning original data.")
@@ -236,6 +382,107 @@ def create_cutline_mask(shape: Tuple[int, int],
     except Exception as e:
         logger.warning(f"Failed to create cutline mask: {e}. Returning full mask.")
         return np.ones(shape, dtype=bool)
+
+
+def clip_ogr_geometries_to_bounds(ogr_geometries: List['ogr.Geometry'], 
+                                  bounds: Tuple[float, float, float, float]) -> List[Dict[str, Any]]:
+    """
+    Clip OGR geometries to the given bounds, returning GeoJSON dicts for rasterio.
+    
+    This avoids the inefficient JSON round-trip conversion by working with 
+    OGR geometries directly until the final conversion.
+    
+    Parameters
+    ----------
+    ogr_geometries : List[ogr.Geometry]
+        List of OGR geometry objects
+    bounds : Tuple[float, float, float, float]
+        Bounding box as (west, south, east, north)
+        
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of clipped geometries as GeoJSON dicts for rasterio.mask
+    """
+    if not ogr_geometries or not HAS_OGR:
+        return []
+        
+    west, south, east, north = bounds
+    clipped = []
+    
+    try:
+        # Create bounding box geometry for clipping
+        bbox_wkt = f"POLYGON(({west} {south}, {east} {south}, {east} {north}, {west} {north}, {west} {south}))"
+        bbox_geom = ogr.CreateGeometryFromWkt(bbox_wkt)
+        
+        for geom in ogr_geometries:
+            if geom and bbox_geom.Intersects(geom):
+                # Clip geometry to bounding box - this is the key optimization
+                clipped_geom = geom.Intersection(bbox_geom)
+                
+                if clipped_geom and not clipped_geom.IsEmpty():
+                    # Only convert to JSON at the very end
+                    clipped_json_str = clipped_geom.ExportToJson()
+                    if clipped_json_str:
+                        clipped_dict = json.loads(clipped_json_str)
+                        clipped.append(clipped_dict)
+                
+    except Exception as e:
+        logger.warning(f"Failed to clip geometries to bounds: {e}. Using original geometries.")
+        # Fallback: convert original geometries to dicts
+        for geom in ogr_geometries:
+            try:
+                geom_json_str = geom.ExportToJson()
+                if geom_json_str:
+                    geom_dict = json.loads(geom_json_str)
+                    clipped.append(geom_dict)
+            except:
+                continue
+    
+    logger.debug(f"Clipped {len(ogr_geometries)} OGR geometries to {len(clipped)} parts within tile bounds")
+    return clipped
+
+
+def clip_geometries_to_bounds(geometries: List[Dict[str, Any]], 
+                             bounds: Tuple[float, float, float, float]) -> List[Dict[str, Any]]:
+    """
+    Clip geometries to the given bounds, returning only the parts within the bounds.
+    
+    DEPRECATED: Use clip_ogr_geometries_to_bounds for better performance.
+    """
+    if not geometries or not HAS_OGR:
+        return geometries
+        
+    west, south, east, north = bounds
+    clipped = []
+    
+    try:
+        # Create bounding box geometry for clipping
+        bbox_wkt = f"POLYGON(({west} {south}, {east} {south}, {east} {north}, {west} {north}, {west} {south}))"
+        bbox_geom = ogr.CreateGeometryFromWkt(bbox_wkt)
+        
+        for geom_dict in geometries:
+            # Convert dict back to OGR geometry for spatial operations
+            geom_json_str = json.dumps(geom_dict)
+            geom = ogr.CreateGeometryFromJson(geom_json_str)
+            
+            if geom and bbox_geom.Intersects(geom):
+                # Clip geometry to bounding box - this is the key optimization
+                clipped_geom = geom.Intersection(bbox_geom)
+                
+                if clipped_geom and not clipped_geom.IsEmpty():
+                    # Convert back to GeoJSON dict
+                    clipped_json_str = clipped_geom.ExportToJson()
+                    if clipped_json_str:
+                        clipped_dict = json.loads(clipped_json_str)
+                        clipped.append(clipped_dict)
+                
+    except Exception as e:
+        logger.warning(f"Failed to clip geometries to bounds: {e}. Using original geometries.")
+        return geometries
+    
+    logger.debug(f"Clipped {len(geometries)} geometries to {len(clipped)} parts within tile bounds")
+    return clipped
 
 
 def validate_cutline_file(cutline_path: Path) -> bool:

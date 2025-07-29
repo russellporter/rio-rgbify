@@ -16,7 +16,7 @@ from typing import Optional, Tuple, List, Dict
 from contextlib import contextmanager
 from rio_rgbify.database import MBTilesDatabase
 from rio_rgbify.image import ImageFormat, ImageEncoder
-from rio_rgbify.cutline import load_cutline_geometries, clip_array_with_cutline
+from rio_rgbify.cutline import load_cutline_geometries, clip_array_with_cutline, clip_ogr_geometries_to_bounds
 from queue import Queue
 import functools
 from scipy.ndimage import gaussian_filter # Import gaussian filter
@@ -62,7 +62,8 @@ class MBTilesSource:
     interval: float = DEFAULT_MAPBOX_INTERVAL # Add interval with default for mapbox
     mask_values: list = field(default_factory=lambda: [0.0])
     cutline: Optional[Path] = None # Path to cutline polygon file (shapefile, GeoJSON, etc.)
-    _cutline_geometries: Optional[List] = field(default=None, init=False, repr=False) # Cached cutline geometries
+    _cutline_geometries: Optional[List] = field(default=None, init=False, repr=False) # Cached cutline geometries (GeoJSON dicts)
+    _cutline_ogr_geometries: Optional[List] = field(default=None, init=False, repr=False) # Cached OGR geometries
 
     def __post_init__(self):
         if not self.path.exists():
@@ -71,12 +72,21 @@ class MBTilesSource:
             raise ValueError(f"Cutline file does not exist: {self.cutline}")
     
     def get_cutline_geometries(self, target_crs: str = 'EPSG:3857'):
-        """Get cached cutline geometries, loading them if needed."""
+        """Get cached cutline geometries as GeoJSON dicts, loading them if needed."""
         if self.cutline is None:
             return None
         if self._cutline_geometries is None:
             self._cutline_geometries = load_cutline_geometries(self.cutline, target_crs)
         return self._cutline_geometries
+    
+    def get_cutline_ogr_geometries(self, target_crs: str = 'EPSG:3857'):
+        """Get cached cutline geometries as OGR objects, loading them if needed."""
+        if self.cutline is None:
+            return None
+        if self._cutline_ogr_geometries is None:
+            from rio_rgbify.cutline import load_cutline_ogr_geometries
+            self._cutline_ogr_geometries = load_cutline_ogr_geometries(self.cutline, target_crs)
+        return self._cutline_ogr_geometries
 
 
 @dataclass
@@ -194,16 +204,24 @@ class TerrainRGBMerger:
                 elevation += source.height_adjustment
                 
                 # Apply cutline clipping if specified
-                cutline_geometries = source.get_cutline_geometries('EPSG:3857')
-                if cutline_geometries is not None:
+                cutline_ogr_geometries = source.get_cutline_ogr_geometries('EPSG:3857')
+                if cutline_ogr_geometries is not None:
                     try:
-                        elevation = clip_array_with_cutline(
-                            elevation, 
-                            meta['transform'],
-                            cutline_geometries, 
-                            crs='EPSG:3857',
-                            nodata=np.nan
-                        )
+                        # Get tile bounds for spatial filtering
+                        bounds = mercantile.bounds(tile)
+                        tile_bounds = (bounds.west, bounds.south, bounds.east, bounds.north)
+                        
+                        # Clip OGR geometries to tile bounds (avoids JSON round-trips)
+                        clipped_geometries = clip_ogr_geometries_to_bounds(cutline_ogr_geometries, tile_bounds)
+                        
+                        if clipped_geometries:
+                            elevation = clip_array_with_cutline(
+                                elevation, 
+                                meta['transform'],
+                                clipped_geometries, 
+                                crs='EPSG:3857',
+                                nodata=np.nan
+                            )
                     except Exception as e:
                         self.logger.warning(f"Failed to apply cutline from {source.cutline}: {e}. Proceeding without cutline.")
                 
