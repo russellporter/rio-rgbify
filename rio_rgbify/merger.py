@@ -289,6 +289,10 @@ class TerrainRGBMerger:
     def _is_complete_tile(self, decoded_data: np.ndarray) -> bool:
         """Check if tile has no holes (NaN values)"""
         return not np.isnan(decoded_data).any()
+    
+    def _is_empty_tile(self, decoded_data: np.ndarray) -> bool:
+        """Check if tile is empty (all NaN values)"""
+        return np.all(np.isnan(decoded_data))
 
     def _get_raw_tile_bytes(self, conn: sqlite3.Connection, tile: mercantile.Tile) -> Optional[bytes]:
         """Get raw tile bytes from source database"""
@@ -409,7 +413,7 @@ class TerrainRGBMerger:
                 tile_data = self._extract_tile(source, tile.z, tile.x, tile.y, source_conns, i)
                 tile_datas[i] = tile_data
                 
-                if tile_data is not None:
+                if tile_data is not None and not self._is_empty_tile(tile_data.data):
                     if (self._is_compatible_encoding(source) and 
                         self._is_complete_tile(tile_data.data) and
                         tile_data.source_zoom == tile.z):
@@ -608,7 +612,7 @@ def process_tile_task(task_tuple: tuple) -> None:
                 tile_data = merger_instance._extract_tile(source, tile.z, tile.x, tile.y, source_conns, i)
                 tile_datas[i] = tile_data
                 
-                if tile_data is not None:
+                if tile_data is not None and not merger_instance._is_empty_tile(tile_data.data):
                     if (merger_instance._is_compatible_encoding(source) and 
                         merger_instance._is_complete_tile(tile_data.data) and
                         tile_data.source_zoom == tile.z):
