@@ -229,7 +229,6 @@ class TerrainRGBMerger:
                 
                 # Apply cutline clipping if specified
                 cutline_ogr_geometries = source.get_cutline_ogr_geometries('EPSG:3857')
-                self.logger.debug(f"Retrieved cutline geometries: {len(cutline_ogr_geometries) if cutline_ogr_geometries else 0}")
                 
                 if cutline_ogr_geometries is not None:
                     try:
@@ -516,7 +515,6 @@ class TerrainRGBMerger:
                         # Convert to WKT strings for serialization
                         cutline_geometries_wkt = [geom.ExportToWkt() for geom in ogr_geometries]
                         
-                        self.logger.info(f"Pre-loaded {len(cutline_geometries_wkt)} geometries for {s.cutline}")
                 except Exception as e:
                     self.logger.warning(f"Failed to pre-load cutline geometries from {s.cutline}: {e}")
                     cutline_geometries_wkt = None
@@ -665,7 +663,6 @@ def process_tile_task(task_tuple: tuple) -> None:
                             geom.AssignSpatialReference(srs)
                     
                     _PROCESS_GEOMETRY_CACHE[cache_key] = ogr_geometries
-                    logging.debug(f"Cached {len(ogr_geometries)} OGR geometries with EPSG:3857 for {cutline}")
                 except Exception as e:
                     logging.warning(f"Failed to recreate OGR geometries from WKT: {e}")
                     _PROCESS_GEOMETRY_CACHE[cache_key] = None
@@ -696,7 +693,7 @@ def process_tile_task(task_tuple: tuple) -> None:
                         raw_bytes = merger_instance._get_raw_tile_bytes(source_conns[source.path], tile)
                         if raw_bytes:
                             db.insert_tile_with_retry([tile.x, tile.y, tile.z], raw_bytes)
-                            logging.info(f"Fast path: directly copied tile {tile.z}/{tile.x}/{tile.y} from source {i}")
+                            logging.debug(f"Fast path: directly copied tile {tile.z}/{tile.x}/{tile.y} from source {i}")
                             return
                         else:
                             print(f"FATAL: Failed to get raw bytes for tile {tile.z}/{tile.x}/{tile.y} that should exist")

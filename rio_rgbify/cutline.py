@@ -402,18 +402,11 @@ def clip_ogr_geometries_to_bounds(ogr_geometries: List['ogr.Geometry'],
     List[Dict[str, Any]]
         List of clipped geometries as GeoJSON dicts for rasterio.mask
     """
-    if not ogr_geometries:
-        logger.debug("No OGR geometries provided to clip_ogr_geometries_to_bounds")
-        return []
-        
-    if not HAS_OGR:
-        logger.warning("OGR not available for geometry clipping")
+    if not ogr_geometries or not HAS_OGR:
         return []
         
     west, south, east, north = bounds
     clipped = []
-    
-    logger.debug(f"Clipping {len(ogr_geometries)} geometries to bounds: {bounds}")
     
     try:
         # Create bounding box geometry for clipping with proper coordinate system
@@ -429,74 +422,37 @@ def clip_ogr_geometries_to_bounds(ogr_geometries: List['ogr.Geometry'],
             srs = osr.SpatialReference()
             srs.ImportFromEPSG(3857)  # Web Mercator
             bbox_geom.AssignSpatialReference(srs)
-            logger.debug(f"Assigned EPSG:3857 to bbox geometry")
         
         for i, geom in enumerate(ogr_geometries):
-            if not geom:
-                logger.debug(f"Geometry {i} is None, skipping")
+            if not geom or not geom.IsValid():
                 continue
-                
-            if not geom.IsValid():
-                logger.debug(f"Geometry {i} is invalid, skipping")
-                continue
-                
-            # Debug coordinate systems
-            geom_srs = geom.GetSpatialReference()
-            bbox_srs = bbox_geom.GetSpatialReference()
-            logger.debug(f"Geometry {i} SRS: {geom_srs.ExportToWkt()[:100] if geom_srs else 'None'}...")
-            logger.debug(f"Bbox SRS: {bbox_srs.ExportToWkt()[:100] if bbox_srs else 'None'}...")
-            
-            # Get geometry bounds for comparison
-            envelope = geom.GetEnvelope()  # Returns (minX, maxX, minY, maxY)
-            geom_bounds = (envelope[0], envelope[2], envelope[1], envelope[3])  # (west, south, east, north)
-            logger.info(f"BOUNDS COMPARISON:")
-            logger.info(f"  Tile bounds:     {bounds}")
-            logger.info(f"  Geometry bounds: {geom_bounds}")
-            logger.info(f"  Tile bounds overlap geometry: west={bounds[0] < geom_bounds[2]}, south={bounds[1] < geom_bounds[3]}, east={bounds[2] > geom_bounds[0]}, north={bounds[3] > geom_bounds[1]}")
-            
-            # Check if bounding boxes overlap (basic test)
-            bbox_overlap = (bounds[0] < geom_bounds[2] and bounds[2] > geom_bounds[0] and 
-                          bounds[1] < geom_bounds[3] and bounds[3] > geom_bounds[1])
-            logger.info(f"  Bounding box overlap: {bbox_overlap}")
                 
             intersects = bbox_geom.Intersects(geom)
-            logger.info(f"  OGR Intersects result: {intersects}")
-            
-            if bbox_overlap and not intersects:
-                logger.warning(f"Bounding boxes overlap but OGR says no intersection - potential coordinate system issue!")
             
             if intersects:
                 # Clip geometry to bounding box - this is the key optimization
                 clipped_geom = geom.Intersection(bbox_geom)
                 
                 if clipped_geom and not clipped_geom.IsEmpty():
-                    # Only convert to JSON at the very end
                     clipped_json_str = clipped_geom.ExportToJson()
                     if clipped_json_str:
                         clipped_dict = json.loads(clipped_json_str)
                         clipped.append(clipped_dict)
-                        logger.debug(f"Successfully clipped geometry {i}")
-                    else:
-                        logger.debug(f"Failed to export clipped geometry {i} to JSON")
-                else:
-                    logger.debug(f"Clipped geometry {i} is empty or None")
                 
     except Exception as e:
         logger.error(f"Failed to clip geometries to bounds: {e}. Using original geometries.")
         # Fallback: convert original geometries to dicts
-        for i, geom in enumerate(ogr_geometries):
+        for geom in ogr_geometries:
             try:
                 if geom and geom.IsValid():
                     geom_json_str = geom.ExportToJson()
                     if geom_json_str:
                         geom_dict = json.loads(geom_json_str)
                         clipped.append(geom_dict)
-                        logger.debug(f"Fallback: converted geometry {i} to dict")
             except Exception as fallback_e:
-                logger.warning(f"Fallback failed for geometry {i}: {fallback_e}")
+                logger.warning(f"Fallback failed for geometry: {fallback_e}")
                 continue
     
-    logger.info(f"Clipped {len(ogr_geometries)} OGR geometries to {len(clipped)} parts within tile bounds")
     return clipped
 
 
