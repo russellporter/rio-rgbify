@@ -212,7 +212,6 @@ class TerrainRGBMerger:
                 bounds_geo = mercantile.bounds(xyz_tile)
                 
                 # Convert to Web Mercator for consistent CRS
-                import mercantile
                 west_mercator, south_mercator = mercantile.xy(bounds_geo.west, bounds_geo.south)
                 east_mercator, north_mercator = mercantile.xy(bounds_geo.east, bounds_geo.north)
                 
