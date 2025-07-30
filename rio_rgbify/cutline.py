@@ -93,6 +93,7 @@ def load_cutline_ogr_geometries(cutline_path: Path, target_crs: str = 'EPSG:3857
         
         # Get source CRS
         source_srs = layer.GetSpatialRef()
+        logger.info(f"Source layer SRS: {source_srs.ExportToWkt()[:200] if source_srs else 'None'}...")
         
         # Set up coordinate transformation if needed
         transform = None
@@ -103,8 +104,15 @@ def load_cutline_ogr_geometries(cutline_path: Path, target_crs: str = 'EPSG:3857
             else:
                 target_srs.ImportFromWkt(target_crs)
             
-            if not source_srs.IsSame(target_srs):
+            logger.info(f"Target SRS: {target_srs.ExportToWkt()[:200]}...")
+            same_srs = source_srs.IsSame(target_srs)
+            logger.info(f"Source and target SRS are the same: {same_srs}")
+            
+            if not same_srs:
                 transform = osr.CoordinateTransformation(source_srs, target_srs)
+                logger.info(f"Created coordinate transformation: {transform is not None}")
+            else:
+                logger.info("No coordinate transformation needed - SRS are the same")
         
         # Read each feature and extract geometry
         for feature in layer:
@@ -122,7 +130,21 @@ def load_cutline_ogr_geometries(cutline_path: Path, target_crs: str = 'EPSG:3857
             
             # Transform geometry if needed
             if transform:
+                # Get bounds before transformation for debugging
+                envelope_before = cloned_geom.GetEnvelope()
+                bounds_before = (envelope_before[0], envelope_before[2], envelope_before[1], envelope_before[3])
+                
                 cloned_geom.Transform(transform)
+                
+                # Get bounds after transformation for debugging
+                envelope_after = cloned_geom.GetEnvelope()  
+                bounds_after = (envelope_after[0], envelope_after[2], envelope_after[1], envelope_after[3])
+                
+                logger.info(f"Geometry transformed: {bounds_before} -> {bounds_after}")
+            else:
+                envelope = cloned_geom.GetEnvelope()
+                bounds = (envelope[0], envelope[2], envelope[1], envelope[3])
+                logger.info(f"Geometry NOT transformed (no transform): {bounds}")
             
             # Simplify complex geometries for better performance
             # OGR Simplify takes tolerance as positional argument, not keyword
