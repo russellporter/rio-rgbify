@@ -511,6 +511,13 @@ class TerrainRGBMerger:
                     if ogr_geometries:
                         # Convert to WKT strings for serialization
                         cutline_geometries_wkt = [geom.ExportToWkt() for geom in ogr_geometries]
+                        
+                        # Debug: Check bounds of geometries after transformation
+                        for i, geom in enumerate(ogr_geometries):
+                            envelope = geom.GetEnvelope()
+                            bounds = (envelope[0], envelope[2], envelope[1], envelope[3])
+                            self.logger.info(f"Main process geometry {i} bounds after transform: {bounds}")
+                        
                         self.logger.info(f"Pre-loaded {len(cutline_geometries_wkt)} geometries for {s.cutline}")
                 except Exception as e:
                     self.logger.warning(f"Failed to pre-load cutline geometries from {s.cutline}: {e}")
