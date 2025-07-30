@@ -449,9 +449,25 @@ def clip_ogr_geometries_to_bounds(ogr_geometries: List['ogr.Geometry'],
             bbox_srs = bbox_geom.GetSpatialReference()
             logger.debug(f"Geometry {i} SRS: {geom_srs.ExportToWkt()[:100] if geom_srs else 'None'}...")
             logger.debug(f"Bbox SRS: {bbox_srs.ExportToWkt()[:100] if bbox_srs else 'None'}...")
+            
+            # Get geometry bounds for comparison
+            envelope = geom.GetEnvelope()  # Returns (minX, maxX, minY, maxY)
+            geom_bounds = (envelope[0], envelope[2], envelope[1], envelope[3])  # (west, south, east, north)
+            logger.info(f"BOUNDS COMPARISON:")
+            logger.info(f"  Tile bounds:     {bounds}")
+            logger.info(f"  Geometry bounds: {geom_bounds}")
+            logger.info(f"  Tile bounds overlap geometry: west={bounds[0] < geom_bounds[2]}, south={bounds[1] < geom_bounds[3]}, east={bounds[2] > geom_bounds[0]}, north={bounds[3] > geom_bounds[1]}")
+            
+            # Check if bounding boxes overlap (basic test)
+            bbox_overlap = (bounds[0] < geom_bounds[2] and bounds[2] > geom_bounds[0] and 
+                          bounds[1] < geom_bounds[3] and bounds[3] > geom_bounds[1])
+            logger.info(f"  Bounding box overlap: {bbox_overlap}")
                 
             intersects = bbox_geom.Intersects(geom)
-            logger.debug(f"Geometry {i} intersects with tile bounds: {intersects}")
+            logger.info(f"  OGR Intersects result: {intersects}")
+            
+            if bbox_overlap and not intersects:
+                logger.warning(f"Bounding boxes overlap but OGR says no intersection - potential coordinate system issue!")
             
             if intersects:
                 # Clip geometry to bounding box - this is the key optimization

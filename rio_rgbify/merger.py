@@ -228,7 +228,9 @@ class TerrainRGBMerger:
                     try:
                         # Get tile bounds for spatial filtering
                         tile_bounds = (bounds.west, bounds.south, bounds.east, bounds.north)
-                        self.logger.debug(f"Tile bounds for {tile.z}/{tile.x}/{tile.y}: {tile_bounds}")
+                        self.logger.info(f"PROCESSING TILE {tile.z}/{tile.x}/{tile.y}")
+                        self.logger.info(f"  Mercantile bounds: {tile_bounds}")
+                        self.logger.info(f"  Bounds width: {bounds.east - bounds.west:.2f}m, height: {bounds.north - bounds.south:.2f}m")
                         
                         # Clip OGR geometries to tile bounds (avoids JSON round-trips)
                         clipped_geometries = clip_ogr_geometries_to_bounds(cutline_ogr_geometries, tile_bounds)
