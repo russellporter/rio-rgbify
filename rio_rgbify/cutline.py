@@ -420,13 +420,20 @@ def clip_ogr_geometries_to_bounds(ogr_geometries: List['ogr.Geometry'],
     logger.debug(f"Clipping {len(ogr_geometries)} geometries to bounds: {bounds}")
     
     try:
-        # Create bounding box geometry for clipping
+        # Create bounding box geometry for clipping with proper coordinate system
         bbox_wkt = f"POLYGON(({west} {south}, {east} {south}, {east} {north}, {west} {north}, {west} {south}))"
         bbox_geom = ogr.CreateGeometryFromWkt(bbox_wkt)
         
         if not bbox_geom:
             logger.error(f"Failed to create bbox geometry from WKT: {bbox_wkt}")
             return []
+            
+        # Set the coordinate system to match the geometries (EPSG:3857)
+        if HAS_OGR:
+            srs = osr.SpatialReference()
+            srs.ImportFromEPSG(3857)  # Web Mercator
+            bbox_geom.AssignSpatialReference(srs)
+            logger.debug(f"Assigned EPSG:3857 to bbox geometry")
         
         for i, geom in enumerate(ogr_geometries):
             if not geom:
@@ -436,6 +443,12 @@ def clip_ogr_geometries_to_bounds(ogr_geometries: List['ogr.Geometry'],
             if not geom.IsValid():
                 logger.debug(f"Geometry {i} is invalid, skipping")
                 continue
+                
+            # Debug coordinate systems
+            geom_srs = geom.GetSpatialReference()
+            bbox_srs = bbox_geom.GetSpatialReference()
+            logger.debug(f"Geometry {i} SRS: {geom_srs.ExportToWkt()[:100] if geom_srs else 'None'}...")
+            logger.debug(f"Bbox SRS: {bbox_srs.ExportToWkt()[:100] if bbox_srs else 'None'}...")
                 
             intersects = bbox_geom.Intersects(geom)
             logger.debug(f"Geometry {i} intersects with tile bounds: {intersects}")

@@ -646,10 +646,18 @@ def process_tile_task(task_tuple: tuple) -> None:
             cache_key = f"{path}_{cutline}"  # Use path+cutline as unique key
             if cutline_geometries_wkt and cache_key not in _PROCESS_GEOMETRY_CACHE:
                 try:
-                    from osgeo import ogr
+                    from osgeo import ogr, osr
                     ogr_geometries = [ogr.CreateGeometryFromWkt(wkt) for wkt in cutline_geometries_wkt]
+                    
+                    # Assign coordinate system to recreated geometries
+                    srs = osr.SpatialReference()
+                    srs.ImportFromEPSG(3857)  # Web Mercator - should match what was used during loading
+                    for geom in ogr_geometries:
+                        if geom:
+                            geom.AssignSpatialReference(srs)
+                    
                     _PROCESS_GEOMETRY_CACHE[cache_key] = ogr_geometries
-                    logging.debug(f"Cached {len(ogr_geometries)} OGR geometries for {cutline}")
+                    logging.debug(f"Cached {len(ogr_geometries)} OGR geometries with EPSG:3857 for {cutline}")
                 except Exception as e:
                     logging.warning(f"Failed to recreate OGR geometries from WKT: {e}")
                     _PROCESS_GEOMETRY_CACHE[cache_key] = None
