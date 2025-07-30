@@ -512,12 +512,6 @@ class TerrainRGBMerger:
                         # Convert to WKT strings for serialization
                         cutline_geometries_wkt = [geom.ExportToWkt() for geom in ogr_geometries]
                         
-                        # Debug: Check bounds of geometries after transformation
-                        for i, geom in enumerate(ogr_geometries):
-                            envelope = geom.GetEnvelope()
-                            bounds = (envelope[0], envelope[2], envelope[1], envelope[3])
-                            self.logger.info(f"Main process geometry {i} bounds after transform: {bounds}")
-                        
                         self.logger.info(f"Pre-loaded {len(cutline_geometries_wkt)} geometries for {s.cutline}")
                 except Exception as e:
                     self.logger.warning(f"Failed to pre-load cutline geometries from {s.cutline}: {e}")
@@ -658,9 +652,10 @@ def process_tile_task(task_tuple: tuple) -> None:
                     from osgeo import ogr, osr
                     ogr_geometries = [ogr.CreateGeometryFromWkt(wkt) for wkt in cutline_geometries_wkt]
                     
-                    # Assign coordinate system to recreated geometries
+                    # Assign coordinate system to recreated geometries  
+                    # The WKT already contains transformed coordinates, just assign the correct SRS
                     srs = osr.SpatialReference()
-                    srs.ImportFromEPSG(3857)  # Web Mercator - should match what was used during loading
+                    srs.ImportFromEPSG(3857)  # Web Mercator
                     for geom in ogr_geometries:
                         if geom:
                             geom.AssignSpatialReference(srs)
