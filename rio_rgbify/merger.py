@@ -209,7 +209,13 @@ class TerrainRGBMerger:
                 # Create metadata early since cutline clipping needs the transform
                 # Convert TMS Y coordinate back to XYZ for mercantile.bounds()
                 xyz_tile = mercantile.Tile(x=tile.x, y=(2**tile.z - 1) - tile.y, z=tile.z)  
-                bounds = mercantile.bounds(xyz_tile)
+                bounds_geo = mercantile.bounds(xyz_tile)
+                
+                # Convert to Web Mercator for consistent CRS
+                import mercantile
+                west_mercator, south_mercator = mercantile.xy(bounds_geo.west, bounds_geo.south)
+                east_mercator, north_mercator = mercantile.xy(bounds_geo.east, bounds_geo.north)
+                
                 meta = dataset.meta.copy()
                 meta.update({
                     'count': 1,
@@ -217,7 +223,7 @@ class TerrainRGBMerger:
                     'driver': 'GTiff',
                     'crs': 'EPSG:3857',
                     'transform': rasterio.transform.from_bounds(
-                        bounds.west, bounds.south, bounds.east, bounds.north,
+                        west_mercator, south_mercator, east_mercator, north_mercator,
                         meta['width'], meta['height']
                     )
                 })
@@ -228,11 +234,8 @@ class TerrainRGBMerger:
                 
                 if cutline_ogr_geometries is not None:
                     try:
-                        # Get tile bounds for spatial filtering 
-                        # Convert TMS Y coordinate back to XYZ for mercantile.bounds()
-                        xyz_tile = mercantile.Tile(x=tile.x, y=(2**tile.z - 1) - tile.y, z=tile.z)
-                        bounds_xyz = mercantile.bounds(xyz_tile)
-                        tile_bounds = (bounds_xyz.west, bounds_xyz.south, bounds_xyz.east, bounds_xyz.north)
+                        # Reuse the Web Mercator bounds already calculated for metadata
+                        tile_bounds = (west_mercator, south_mercator, east_mercator, north_mercator)
                         
                         # Clip OGR geometries to tile bounds (avoids JSON round-trips)
                         clipped_geometries = clip_ogr_geometries_to_bounds(cutline_ogr_geometries, tile_bounds)
