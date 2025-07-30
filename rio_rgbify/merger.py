@@ -207,7 +207,9 @@ class TerrainRGBMerger:
                 elevation += source.height_adjustment
                 
                 # Create metadata early since cutline clipping needs the transform
-                bounds = mercantile.bounds(tile)
+                # Convert TMS Y coordinate back to XYZ for mercantile.bounds()
+                xyz_tile = mercantile.Tile(x=tile.x, y=(2**tile.z - 1) - tile.y, z=tile.z)  
+                bounds = mercantile.bounds(xyz_tile)
                 meta = dataset.meta.copy()
                 meta.update({
                     'count': 1,
@@ -226,11 +228,11 @@ class TerrainRGBMerger:
                 
                 if cutline_ogr_geometries is not None:
                     try:
-                        # Get tile bounds for spatial filtering
-                        tile_bounds = (bounds.west, bounds.south, bounds.east, bounds.north)
-                        self.logger.info(f"PROCESSING TILE {tile.z}/{tile.x}/{tile.y}")
-                        self.logger.info(f"  Mercantile bounds: {tile_bounds}")
-                        self.logger.info(f"  Bounds width: {bounds.east - bounds.west:.2f}m, height: {bounds.north - bounds.south:.2f}m")
+                        # Get tile bounds for spatial filtering 
+                        # Convert TMS Y coordinate back to XYZ for mercantile.bounds()
+                        xyz_tile = mercantile.Tile(x=tile.x, y=(2**tile.z - 1) - tile.y, z=tile.z)
+                        bounds_xyz = mercantile.bounds(xyz_tile)
+                        tile_bounds = (bounds_xyz.west, bounds_xyz.south, bounds_xyz.east, bounds_xyz.north)
                         
                         # Clip OGR geometries to tile bounds (avoids JSON round-trips)
                         clipped_geometries = clip_ogr_geometries_to_bounds(cutline_ogr_geometries, tile_bounds)
